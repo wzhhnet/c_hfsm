@@ -40,7 +40,7 @@ ALLOCATOR_IMPLEMENT(state, struct state_info_t);
 
 struct hfsm_t {
     hub_t *hub;
-    hub_sub_id_t sub_id; // subscribe id for event processing
+    hub_subscriber_t *sub; // subscribe id for event processing
     state_id_t init_state_id;
     void *user_data;
     struct state_t *cur_state;
@@ -194,7 +194,7 @@ int hfsm_destroy(hfsm_handle *hfsm)
     ALLOCATOR_DESTORY(state, &handle->pool);
     /*! Destory evthub */
     if (handle->hub) {
-        hub_unsubscribe(handle->hub, handle->sub_id);
+        hub_unsubscribe(handle->sub);
     }
     /*! Destory hfsm */
     free(*hfsm);
@@ -206,11 +206,12 @@ int hfsm_destroy(hfsm_handle *hfsm)
 int hfsm_start(hfsm_handle hfsm, state_id_t id)
 {
     struct hfsm_t *handle;
+    uint32_t msg_ids[] = { HUB_MSG_ID_ALL };
     RETURN_IF_NULL(hfsm, HFSM_ERR_NULLPTR);
     handle = (struct hfsm_t*)hfsm;
     handle->init_state_id = id;
-    handle->sub_id = hub_subscribe(handle->hub, HUB_MSG_ID_ALL, hfsm_event_invoke, hfsm);
-    RETURN_IF_TRUE(!handle->sub_id, HFSM_ERR_EVTHUB);
+    handle->sub = hub_subscribe(handle->hub, msg_ids, SIZEOF_ARRAY(msg_ids), hfsm_event_invoke, hfsm);
+    RETURN_IF_TRUE(!handle->sub, HFSM_ERR_EVTHUB);
     return HFSM_SUCC;
 }
 

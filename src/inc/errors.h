@@ -72,6 +72,8 @@ extern "C" {
             return code;            \
     } while (0)
 
+#define SIZEOF_ARRAY(arr) (sizeof(arr)/sizeof((arr)[0]))
+
 #ifdef __cplusplus
 };
 #endif /* __cplusplus */
