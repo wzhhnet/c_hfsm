@@ -36,12 +36,12 @@ extern "C" {
 #define MAT "\033[345"
 #define RST "\033[0m"
 
-void hfsm_trace(const char *format, ...);
+void hfsm_trace(const char *style, const char *format, ...);
 
-#define LOGD(...)   ((void)hfsm_trace(BRN LOG_TAG "-d: " __VA_ARGS__))
-#define LOGI(...)   ((void)hfsm_trace(GRN LOG_TAG "-i: " __VA_ARGS__))
-#define LOGW(...)   ((void)hfsm_trace(BLU LOG_TAG "-w: " __VA_ARGS__))
-#define LOGE(...)   ((void)hfsm_trace(RED LOG_TAG "-e: " __VA_ARGS__))
+#define LOGD(...)   ((void)hfsm_trace(BRN,"[d][" LOG_TAG "] " __VA_ARGS__))
+#define LOGI(...)   ((void)hfsm_trace(GRN,"[i][" LOG_TAG "] " __VA_ARGS__))
+#define LOGW(...)   ((void)hfsm_trace(BLU,"[w][" LOG_TAG "] " __VA_ARGS__))
+#define LOGE(...)   ((void)hfsm_trace(RED,"[e][" LOG_TAG "] " __VA_ARGS__))
 
 #define LOGE_IF(condition, ...) do { if (condition) {  (void)LOGE(__VA_ARGS__); } }while(0)
 

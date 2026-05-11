@@ -19,17 +19,24 @@
  */
 
 #include <log.h>
+#include <time.h>
+#include <sys/time.h>
 #include <stdarg.h>
 #include <stdio.h>
 
-void hfsm_trace(const char *format, ...) {
-    int n;
+void hfsm_trace(const char *style, const char *format, ...) {
+    size_t n;
     char buf[4096];
-    
+    char timebuf[64];
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    struct tm *tm = localtime(&tv.tv_sec);
+    n = strftime(timebuf, sizeof(timebuf)-1, "%F|%T", tm);
+    n = snprintf(buf, sizeof(buf)-1, "%s[%s.%06ld]", style, timebuf, tv.tv_usec);
+
     va_list ap;
     va_start(ap, format);
-
-    n = vsnprintf(buf, sizeof(buf)-1, format, ap);
+    n += vsnprintf(buf+n, sizeof(buf)-1-n, format, ap);
     if (n > 0 && n < (int)(sizeof(buf)-1)) {
         fprintf(stderr, "%s\n" RST, buf);
     }
