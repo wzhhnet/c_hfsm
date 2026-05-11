@@ -1,3 +1,0 @@
-[submodule "evthub"]
-	path = evthub
-	url = git@github.com:wzhhnet/EventHub.git

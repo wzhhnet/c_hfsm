@@ -18,21 +18,12 @@
  * limitations under the License.
  */
 
-#include <allocator.h>
-#include <event_hub.h>
-
+#include "allocator.h"
+#include "msg_hub.h"
 #include "log.h"
 #include "hfsm.h"
 
-
-
-#define MAX_MESSAGE_NUM     (64)
-
-enum hfsm_msg_e {
-    HFSM_SYS_START  = EVENT_ID_SYS_BASE+1,
-    HFSM_SYS_STOP   = EVENT_ID_SYS_BASE+2,
-};
-
+#define HFSM_INIT_STATE_ID 0xFF
 struct hfsm_sys_t {
     unsigned int what;
     int arg1;
@@ -48,14 +39,16 @@ ALLOCATOR_DECLARE(state, struct state_info_t);
 ALLOCATOR_IMPLEMENT(state, struct state_info_t);
 
 struct hfsm_t {
-    evthub_t evthub;
+    hub_t *hub;
+    hub_sub_id_t sub_id; // subscribe id for event processing
+    state_id_t init_state_id;
     void *user_data;
     struct state_t *cur_state;
     struct listnode state_list;
     ALLOCATOR_DEFINE(state, pool);
 };
 
-static state_t* hfsm_find_state(struct hfsm_t *handle, state_id id)
+static state_t* hfsm_find_state(struct hfsm_t *handle, state_id_t id)
 {
     state_t* s = NULL;
     struct listnode *n;
@@ -71,17 +64,15 @@ static state_t* hfsm_find_state(struct hfsm_t *handle, state_id id)
     return s;
 }
 
-static void hfsm_state_transit(struct hfsm_t *handle, state_id id)
+static void hfsm_state_transit(struct hfsm_t *handle, state_id_t id)
 {
     const int MAX_LEVEL = 64;
     state_t *from[MAX_LEVEL], *to[MAX_LEVEL], *tmp, *target = NULL;
     int from_sum = 0, to_sum = 0;
 
-    RETURN_IF_TRUE(id == handle->cur_state->id,);
-
     /*! find target state information */
     target = hfsm_find_state(handle, id);
-    RETURN_IF_NULL(target,);
+    RETURN_IF_NULL(target, VOID);
 
     /*! fetch all parents of current state */
     tmp = handle->cur_state;
@@ -122,32 +113,29 @@ static void hfsm_state_transit(struct hfsm_t *handle, state_id id)
     handle->cur_state = target;
 }
 
-static void hfsm_event_invoke(const event_t *evt, void *userdata)
+static void hfsm_event_invoke(const mq_msg_t *msg, void *user_data)
 {
-    struct hfsm_t *handle = (struct hfsm_t*)userdata;
-    RETURN_IF_NULL(evt,);
-    RETURN_IF_NULL(userdata,);
-
-    if (evt->id == HFSM_SYS_START) {
-        handle->cur_state = (state_t*)evt->param;
-        if (handle->cur_state->action.entry) {
-            handle->cur_state->action.entry(handle->user_data);
-        }
-    } else {
-        state_t *s = handle->cur_state;
-        while (s) {
-            if (s->action.process) {
-                state_id id = handle->cur_state->id;
-                bool done = s->action.process(evt, handle->user_data, &id);
-                if (done) {
-                    if (id != handle->cur_state->id) {
-                        hfsm_state_transit(handle, id);
-                    }
-                    break;
+    struct hfsm_t *handle = (struct hfsm_t*)user_data;
+    RETURN_IF_NULL(msg, VOID);
+    RETURN_IF_NULL(user_data, VOID);
+    state_t *s = handle->cur_state;
+    if (msg->msg_id == HUB_MSG_ID_SUB_ACK) {
+        // Start HFSM with initial state
+        hfsm_state_transit(handle, handle->init_state_id);
+        return;
+    }
+    while (s) {
+        if (s->action.process) {
+            state_id_t id = handle->cur_state->id;
+            bool done = s->action.process(msg->msg_id, msg->param, &id);
+            if (done) {
+                if (id != handle->cur_state->id) {
+                    hfsm_state_transit(handle, id);
                 }
+                break;
             }
-            s = s->parent;
         }
+        s = s->parent;
     }
 }
 
@@ -164,10 +152,11 @@ state_t* hfsm_new_state(hfsm_handle hfsm)
     return &info->state;
 }
 
-int hfsm_create(hfsm_handle *hfsm, hfsm_param *param)
+int hfsm_create(hfsm_handle *hfsm, hfsm_param *param, hub_t *hub)
 {
     int s;
     struct hfsm_t *handle;
+    RETURN_IF_NULL(hub, HFSM_ERR_NULLPTR);
     RETURN_IF_NULL(hfsm, HFSM_ERR_NULLPTR);
     RETURN_IF_NULL(param, HFSM_ERR_NULLPTR);
     handle = (struct hfsm_t*)malloc(sizeof(struct hfsm_t));
@@ -176,8 +165,10 @@ int hfsm_create(hfsm_handle *hfsm, hfsm_param *param)
     s = ALLOCATOR_CREATE(state, &handle->pool, param->max_states);
     RETURN_IF_FAIL(s, HFSM_ERR_ALLOCATOR);
 
+    handle->init_state_id = HFSM_INIT_STATE_ID;
     handle->user_data = param->userdata;
     handle->cur_state = NULL;
+    handle->hub = hub;
     list_init(&handle->state_list);
     *hfsm = (hfsm_handle)handle;
     return HFSM_SUCC;
@@ -202,8 +193,8 @@ int hfsm_destroy(hfsm_handle *hfsm)
     /*! Destory allocator of state */
     ALLOCATOR_DESTORY(state, &handle->pool);
     /*! Destory evthub */
-    if (handle->evthub) {
-        evthub_destory(&handle->evthub);
+    if (handle->hub) {
+        hub_unsubscribe(handle->hub, handle->sub_id);
     }
     /*! Destory hfsm */
     free(*hfsm);
@@ -212,31 +203,14 @@ int hfsm_destroy(hfsm_handle *hfsm)
     return HFSM_SUCC;
 }
 
-int hfsm_start(hfsm_handle hfsm, state_id id)
+int hfsm_start(hfsm_handle hfsm, state_id_t id)
 {
-    int s;
-    state_t *p;
     struct hfsm_t *handle;
     RETURN_IF_NULL(hfsm, HFSM_ERR_NULLPTR);
     handle = (struct hfsm_t*)hfsm;
-
-    evthub_parm param = {
-        .max = MAX_MESSAGE_NUM,
-        .mode = EVENT_HUB_MODE_PRIORITY,
-        .user_data = (void*)handle,
-        .notifier = hfsm_event_invoke
-    };
-    p = hfsm_find_state(handle, id);
-    RETURN_IF_NULL(p, HFSM_ERR_NO_STATE);
-    s = evthub_create(&handle->evthub, &param);
-    RETURN_IF_FAIL(s, HFSM_ERR_EVTHUB);
-    event_t evt = {
-        .id = HFSM_SYS_START,
-        .priority = 0xFF,
-        .param = (void*)p
-    };
-    s = evthub_send(handle->evthub, &evt);
-    RETURN_IF_FAIL(s, HFSM_ERR_EVTHUB);
+    handle->init_state_id = id;
+    handle->sub_id = hub_subscribe(handle->hub, HUB_MSG_ID_ALL, hfsm_event_invoke, hfsm);
+    RETURN_IF_TRUE(!handle->sub_id, HFSM_ERR_EVTHUB);
     return HFSM_SUCC;
 }
 
@@ -251,19 +225,6 @@ int hfsm_add_state(hfsm_handle hfsm, state_t *s)
     info = container_of(s, struct state_info_t, state);
     RETURN_IF_NULL(info, HFSM_ERR_ALLOCATOR);
     list_add_tail(&handle->state_list, &info->node);
-    return HFSM_SUCC;
-}
-
-int hfsm_send_event(hfsm_handle hfsm, event_t *e)
-{
-    int s;
-    struct hfsm_t *handle;;
-    RETURN_IF_NULL(e, HFSM_ERR_NULLPTR);
-    RETURN_IF_NULL(hfsm, HFSM_ERR_NULLPTR);
-
-    handle = (struct hfsm_t*)hfsm;
-    s = evthub_send(handle->evthub, e);
-    RETURN_IF_FAIL(s, HFSM_ERR_EVTHUB);
     return HFSM_SUCC;
 }
 
